@@ -320,19 +320,21 @@ class RobotController:
         beta = 20
         threshold = 0.2
         nPoints = 0
-
-
+        
         while np.linalg.norm(current_pos - self.qf[0:2]) > threshold:
+            
             ix = np.argmin(np.abs(x - current_pos[0]))
             iy = np.argmin(np.abs(y - current_pos[1]))
 
             grad = np.array([grad_U_y[iy, ix],grad_U_x[iy, ix]])
 
             repulsive_force = -grad
-            if np.linalg.norm(current_pos - self.qf[0:2]) > 0.7:
+
+            if (np.linalg.norm(current_pos - self.qf[0:2]) > 0.7):
                 tangential_force = calculate_tangential_force(grad)
             else:
                 tangential_force = 0
+
             total_force = repulsive_force + beta * tangential_force
 
             current_pos += alpha * total_force
@@ -380,6 +382,115 @@ class RobotController:
             fig.colorbar(c, ax=ax1)
 
             plt.tight_layout()
+
+            plt.show()
+
+    def get_generated_path_manha(self,printmap):
+        
+        def attractive_potential(size, goal,obstacles):
+
+            U_tot = np.zeros((size, size), dtype=int)
+            for rect in obstacles:
+                x, y, width, height = rect
+                y = -y
+                xui = np.clip(250 + int((x+((width+1)/2)) * 50),0,500)
+                xli = np.clip(250 + int((x-((width+1)/2)) * 50),0,500)
+
+                yui = np.clip(250 + int((y+((height+1)/2)) * 50),0,500)
+                yli = np.clip(250 + int((y-((height+1)/2)) * 50),0,500)
+
+                
+                U_tot[yli:yui, xli:xui] += 250000
+
+            gxi, gyi = goal[0:2]
+
+            rows, cols = 500,500
+            stack = [(gxi,gyi)]
+
+            wave = 0
+
+            while stack:
+                wave += 1
+                current = stack.pop(0)
+
+                r, c = current
+                neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+                
+                for neighbor in neighbors:
+                    nr, nc = neighbor
+                    if (0 <= nr < rows and 0 <= nc < cols) and not U_tot[nr,nc]:
+                        stack.append(neighbor)
+                        U_tot[nr,nc] = wave
+
+            return U_tot
+
+        rxi = np.clip(250 + int(self.qi[0] * 50),0,500)
+        ryi = np.clip(250 + int(-self.qi[1] * 50),0,500)
+
+        gxi = np.clip(250 + int(self.qf[0] * 50),0,500)
+        gyi = np.clip(250 + int(-self.qf[1] * 50),0,500)
+
+        start = (ryi,rxi)
+        end = (gyi,gxi)
+
+        U_tot = attractive_potential(500,end,self.map)
+
+        def find_lowest_value_path(grid, start, end, search_range):
+            path = [start]
+            current_point = start
+            nPoints = 0
+
+            while current_point != end:
+                x, y = current_point
+                
+                x_min = max(0, x - search_range)
+                x_max = min(grid.shape[0], x + search_range + 1)
+                y_min = max(0, y - search_range)
+                y_max = min(grid.shape[1], y + search_range + 1)
+                
+                subgrid = grid[x_min:x_max, y_min:y_max]
+                
+                min_index = np.unravel_index(np.argmin(subgrid, axis=None), subgrid.shape)
+                min_point = (x_min + min_index[0], y_min + min_index[1])
+                
+                current_point = min_point
+                path.append(current_point)
+                
+                if (x_min <= end[0] < x_max) and (y_min <= end[1] < y_max):
+                    path.append(end)
+                    break
+                nPoints += 1
+                if(nPoints>=1000):
+                    break
+            
+            return path, nPoints
+        
+        
+        path,self.npoints = find_lowest_value_path(U_tot, start,end,5)
+
+        path_x, path_y = zip(*path) if path else ([], [])
+
+        path_x = np.array(path_x)
+        path_y = np.array(path_y)
+
+        self.pathx = path_y.copy()
+        self.pathx = np.clip((self.pathx - 250)/50,-5,5)
+
+        self.pathy = path_x.copy()
+        self.pathy = - np.clip((self.pathy - 250)/50,-5,5)
+
+        if(printmap):
+            # Separate path coordinates
+            
+
+            # Plot the grid
+            plt.figure(figsize=(8, 8))
+            plt.imshow(U_tot, cmap='viridis', origin='upper', interpolation='none')
+            plt.colorbar(label='Poder Repulsivo')
+            plt.title('Mapa Manhatan')
+
+            # Plot the path
+            plt.plot(path_y, path_x, color='red', marker='o', markersize=3, linewidth=2, linestyle='-', alpha=0.7)
 
             plt.show()
 
@@ -491,6 +602,8 @@ def main():
     if clientID != -1:
         print('Connected to remote API server')
         controller = RobotController(clientID)
+    
+        controller.set_goal(np.array([3,4,0]))
 
         controller.get_map()
 
