@@ -405,7 +405,7 @@ class RobotController:
                 yli = np.clip(250 + int((y-((height+1)/2)) * 50),0,500)
 
                 
-                U_tot[yli:yui, xli:xui] += 250000
+                U_tot[yli:yui, xli:xui] = 250000
 
             gxi, gyi = goal[0:2]
 
@@ -499,7 +499,7 @@ class RobotController:
 
             plt.show()
 
-    def generated_path_graph(self, n_grade=50, printmap=True):
+    def get_generated_path_graph(self, n_grade=50, printmap=True):
 
         def is_point_in_rectangle(px, py, rect):
             x, y, width, height = rect
