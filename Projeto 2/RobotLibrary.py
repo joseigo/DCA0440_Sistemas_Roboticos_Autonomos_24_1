@@ -164,10 +164,10 @@ class RobotController:
 
         k1 = 0.8
         k2 = 0.8
-        kd_theta = 0.4  # Ganho derivativo de orientação
-        kd_l = 0.4   # Ganho derivativo de posição
+        kd_theta = 2.4  # Ganho derivativo de orientação
+        kd_l = 0.6   # Ganho derivativo de posição
 
-        alpha = 0.1  # Escolher fator de filtro
+        alpha = 1.2  # Escolher fator de filtro
         d_erro_theta_filtered = alpha * d_erro_theta + (1 - alpha) * self.prevError[0]
         d_dl_filtered = alpha * d_dl + (1 - alpha) * self.prevError[1]
 
@@ -191,10 +191,11 @@ class RobotController:
         returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
         return np.array([pos[0], pos[1], ori[2]])
 
-    def control_loop(self, t_limit=100):
+    def control_loop(self, t_limit=100, point_change_interval=0.7):
         PathPoint = 0
         startTime = time.time()
         lastTime = startTime
+        last_point_change_time = startTime
         t = 0
 
         while True:
@@ -208,8 +209,9 @@ class RobotController:
 
             v, w = self.get_positioning_control(q, [self.pathx[int(PathPoint)], self.pathy[int(PathPoint)]], dt)
 
-            if np.sqrt((self.pathx[int(PathPoint)] - q[0])**2 + (self.pathy[int(PathPoint)] - q[1])**2) <= 0.1:
+            if now - last_point_change_time >= point_change_interval:
                 PathPoint += 1
+                last_point_change_time = now
 
             wr = ((2.0 * v) + (w * self.L)) / (2.0 * self.r)
             wl = ((2.0 * v) - (w * self.L)) / (2.0 * self.r)
@@ -223,7 +225,7 @@ class RobotController:
             t += dt
             lastTime = now
 
-            if np.sqrt((self.qf[0] - q[0])**2 + (self.qf[1] - q[1])**2) <= 0.001 or PathPoint > self.npoints- 1 or t > t_limit:
+            if np.sqrt((self.qf[0] - q[0])**2 + (self.qf[1] - q[1])**2) <= 0.001 or PathPoint > self.npoints - 1 or t > t_limit:
                 sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, 0, sim.simx_opmode_oneshot_wait)
                 sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, 0, sim.simx_opmode_oneshot_wait)
                 break
@@ -390,6 +392,7 @@ class RobotController:
         def attractive_potential(size, goal,obstacles):
 
             U_tot = np.zeros((size, size), dtype=int)
+
             for rect in obstacles:
                 x, y, width, height = rect
                 y = -y
@@ -400,7 +403,7 @@ class RobotController:
                 yli = np.clip(250 + int((y-((height+1)/2)) * 50),0,500)
 
                 
-                U_tot[yli:yui, xli:xui] += 250000
+                U_tot[yli:yui, xli:xui] = 250000
 
             gxi, gyi = goal[0:2]
 
