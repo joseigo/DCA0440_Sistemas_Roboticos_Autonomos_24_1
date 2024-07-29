@@ -1,7 +1,10 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.signal import savgol_filter
 import time
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+from scipy.signal import savgol_filter
+
 import sim
 
 class RobotController:
