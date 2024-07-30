@@ -591,23 +591,6 @@ class RobotController:
             time.sleep(0.07)
         return res
 
-
-####))
-
-        for rect in self.map:
-            x, y, width, height = rect
-            y = -y
-            xui = int(np.clip(n/2 + int((x+((width+1)/2)) * n/10),0,n-1))
-            xli = int(np.clip(n/2 + int((x-((width+1)/2)) * n/10),0,n-1))
-
-            yui = int(np.clip(n/2 + int((y+((height+1)/2)) * n/10),0,n-1))
-            yli = int(np.clip(n/2 + int((y-((height+1)/2)) * n/10),0,n-1))
-
-            
-            grid[yli:yui, xli:xui] = 1
-
-        G = nx.grid_2d_graph(n, n) 
-        node_colors = {node: 'green' 
 #### PLOTS dos dados
 ####
 
@@ -696,35 +679,4 @@ class RobotController:
         plt.tight_layout()
 
         plt.show()
-
-
-def main():
-    print('Program started')
-    sim.simxFinish(-1)
-    clientID = sim.simxStart('127.0.0.1', 19999, True, True, 5000, 5)
-
-    if clientID != -1:
-        print('Connected to remote API server')
-        controller = RobotController(clientID)
-    
-        controller.set_goal(np.array([3,4,0]))
-
-        controller.get_map()
-
-        controller.plot_map()
-
-        controller.get_generated_path_potential(True)
-
-        controller.send_generated_path()
-
-        controller.control_loop()
-        
-        sim.simxFinish(clientID)
-    else:
-        print('Failed connecting to remote API server')
-
-    print('Program ended')
-
-if __name__ == "__main__":
-    main()
 
