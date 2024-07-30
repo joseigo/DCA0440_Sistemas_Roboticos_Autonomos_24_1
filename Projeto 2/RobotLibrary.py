@@ -500,6 +500,89 @@ class RobotController:
 
             plt.show()
 
+    def get_generated_path_graph(self, n_grade=50, printmap=True):
+
+        def real2grid(real_x, real_y, n):
+            
+            min_val, max_val = -5.0, 5.0
+            
+            i = np.clip(int(n/2) + int(-real_y * (n/(max_val - min_val))),0,n-1)
+            j = np.clip(int(n/2) + int(real_x * (n/(max_val - min_val))),0,n-1)
+
+            return (i, j)
+
+        def grid2real(i, j, n):
+            
+            min_val, max_val = -5.0, 5.0
+
+            real_x = np.clip((j - n/2)/(n/(max_val - min_val)),min_val,max_val)
+            real_y = -np.clip((i - n/2)/(n/(max_val - min_val)),min_val,max_val)
+
+            return real_x, real_y
+        
+        n = n_grade
+
+        grid = np.zeros((n, n))
+
+        for rect in self.map:
+            x, y, width, height = rect
+            y = -y
+            xui = int(np.clip(n/2 + int((x+((width+1)/2)) * n/10),0,n-1))
+            xli = int(np.clip(n/2 + int((x-((width+1)/2)) * n/10),0,n-1))
+
+            yui = int(np.clip(n/2 + int((y+((height+1)/2)) * n/10),0,n-1))
+            yli = int(np.clip(n/2 + int((y-((height+1)/2)) * n/10),0,n-1))
+
+            
+            grid[yli:yui, xli:xui] = 1
+
+        G = nx.grid_2d_graph(n, n) 
+        node_colors = {node: 'green' for node in G.nodes()}
+
+        for r in range(n):
+            for c in range(n):
+                if grid[r][c] == 1 or r == 0 or r == n-1 or c == 0 or c == n-1:  
+                    G.remove_node((r,c))
+        
+         
+        start_node = real2grid(self.qi[0], self.qi[1], n)
+        node_colors[start_node] = 'red'
+        end_node = real2grid(self.qf[0], self.qf[1], n)
+        node_colors[end_node] = 'yellow'
+
+        path = nx.shortest_path(G, source=start_node, target=end_node)
+
+        for node in path:
+            node_colors[node] = 'blue'
+
+        node_colors_list = [node_colors.get(node, 'green') for node in G.nodes()]
+
+        if(printmap):
+            node_colors_list = [node_colors[node] for node in G.nodes()]
+
+            fig = plt.figure(figsize=(10,10), dpi=100)
+            ax = fig.add_subplot(111, aspect='equal')
+
+            ax.grid(which='major', axis='both', linestyle='-', color='k', linewidth=1)
+            obj = ax.imshow(grid, cmap='Greys')
+
+            posn = {node: (node[1],node[0]) for node in G.nodes()}
+            nx.draw(G, posn, font_size=0, node_color=node_colors_list, with_labels=False, node_size=10, ax=ax)            
+            plt.draw()
+
+
+        x_path = []
+        y_path = []
+
+        for pos in path:
+            px, py = grid2real(pos[0], pos[1], n)
+            x_path.append(px)
+            y_path.append(py)
+        
+        self.pathx = x_path.copy()
+        self.pathy = y_path.copy()
+        self.npoints = len(x_path)
+
     def send_generated_path(self):
         returnCode, pathHandle = sim.simxGetObjectHandle(self.clientID, "FloorPath", sim.simx_opmode_oneshot_wait)
 
@@ -509,7 +592,22 @@ class RobotController:
         return res
 
 
-####
+####))
+
+        for rect in self.map:
+            x, y, width, height = rect
+            y = -y
+            xui = int(np.clip(n/2 + int((x+((width+1)/2)) * n/10),0,n-1))
+            xli = int(np.clip(n/2 + int((x-((width+1)/2)) * n/10),0,n-1))
+
+            yui = int(np.clip(n/2 + int((y+((height+1)/2)) * n/10),0,n-1))
+            yli = int(np.clip(n/2 + int((y-((height+1)/2)) * n/10),0,n-1))
+
+            
+            grid[yli:yui, xli:xui] = 1
+
+        G = nx.grid_2d_graph(n, n) 
+        node_colors = {node: 'green' 
 #### PLOTS dos dados
 ####
 
