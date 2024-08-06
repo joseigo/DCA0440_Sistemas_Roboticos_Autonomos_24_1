@@ -7,6 +7,22 @@ from scipy.signal import savgol_filter
 
 import sim
 
+import paho.mqtt.client as mqtt
+
+odomMQTT = np.array([0,0,0],dtype = 'float32')
+
+def on_message(client, userdata, msg):
+    import simplejson as json
+    global odomMQTT
+    if (msg.topic == "robot/odometria"):
+        odomstr = str(msg.payload.decode())
+        odomstr = json.loads(odomstr)
+        odomvalues = odomstr["odometria"].split(', ')
+        odomMQTT = (np.array([odomvalues[0],
+                            odomvalues[1],
+                            odomvalues[2]],
+                            dtype = 'float32'))
+        
 class RobotController:
 
 ####
@@ -16,12 +32,10 @@ class RobotController:
     def __init__(self, clientID, robotName='Pioneer_p3dx'):
         self.clientID = clientID
         self.robotName = robotName
-        self.initialize_handles()
+        #self.initialize_handles()
 
-        self.qi = self.get_robot_position()
-
-        self.L = 0.331  # Metros
-        self.r = 0.09751  # Metros
+        self.L = 0.120  # Metros
+        self.r = 0.03175  # Metros
         self.prevError = np.array([0, 0])
 
         self.lx = []
@@ -37,8 +51,22 @@ class RobotController:
         self.npoints = 0
         self.qf = []
 
-
         self.map = []
+
+        self.broker = '10.7.220.187'
+        # self.broker = '127.0.0.1'
+        self.port = 1883
+        self.topic_odometry = 'robot/odometria'
+        self.topic_velocity = 'slam/ref'
+
+        self.client = mqtt.Client()
+        self.client.on_message = on_message
+        self.client.connect(self.broker, self.port)
+        self.client.subscribe(self.topic_odometry)
+
+        self.client.loop_start()
+
+        self.qi = self.get_robot_position_real()
 
     def initialize_handles(self):
         self.returnCode, self.robotHandle = sim.simxGetObjectHandle(self.clientID, self.robotName, sim.simx_opmode_oneshot_wait)
@@ -149,8 +177,8 @@ class RobotController:
 ####
 
     def set_goal(self, qgoal):
-        self.returnCode = sim.simxSetObjectPosition(self.clientID, self.goalFrame, -1, [qgoal[0], qgoal[1], 0], sim.simx_opmode_oneshot_wait)
-        self.returnCode = sim.simxSetObjectOrientation(self.clientID, self.goalFrame, -1, [0, 0, qgoal[2]], sim.simx_opmode_oneshot_wait)
+        # self.returnCode = sim.simxSetObjectPosition(self.clientID, self.goalFrame, -1, [qgoal[0], qgoal[1], 0], sim.simx_opmode_oneshot_wait)
+        # self.returnCode = sim.simxSetObjectOrientation(self.clientID, self.goalFrame, -1, [0, 0, qgoal[2]], sim.simx_opmode_oneshot_wait)
         self.qf = qgoal.copy()
 
     def get_positioning_control(self, q, ref, dt):
@@ -190,10 +218,15 @@ class RobotController:
         return angle
   
     def get_robot_position(self):
+
         returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
         returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
         return np.array([pos[0], pos[1], ori[2]])
 
+    def get_robot_position_real(self):
+        global odomMQTT
+        return odomMQTT
+    
     def control_loop(self, t_limit=100, point_change_interval=0.7):
         PathPoint = 0
         startTime = time.time()
@@ -205,7 +238,8 @@ class RobotController:
             now = time.time()
             dt = now - lastTime
 
-            q = self.get_robot_position()
+            q = self.get_robot_position_real()
+
             self.lx.append(q[0])
             self.ly.append(q[1])
             self.lt.append(q[2])
@@ -219,8 +253,18 @@ class RobotController:
             wr = ((2.0 * v) + (w * self.L)) / (2.0 * self.r)
             wl = ((2.0 * v) - (w * self.L)) / (2.0 * self.r)
 
-            sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, wr, sim.simx_opmode_oneshot_wait)
-            sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, wl, sim.simx_opmode_oneshot_wait)
+            
+            print(np.array([wr,wl]))
+            message = f'{{"type":"vel", "l":"{wl}", "r":"{wr}"}}'
+            result = self.client.publish(self.topic_velocity, message)
+            # status = result[0]
+            # if status == 0:
+            #     # print(f"Mensagem '{message}' enviada para o tópico '{self.topic_velocity}'")
+            # else:
+            #     print(f"Falha ao enviar mensagem para o tópico '{self.topic_velocity}'")
+
+            # sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, wr, sim.simx_opmode_oneshot_wait)
+            # sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, wl, sim.simx_opmode_oneshot_wait)
 
             self.lwl.append(wl)
             self.lwr.append(wr)
@@ -229,8 +273,13 @@ class RobotController:
             lastTime = now
 
             if np.sqrt((self.qf[0] - q[0])**2 + (self.qf[1] - q[1])**2) <= 0.001 or PathPoint > self.npoints - 1 or t > t_limit:
-                sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, 0, sim.simx_opmode_oneshot_wait)
-                sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, 0, sim.simx_opmode_oneshot_wait)
+                message = f'{{"type":"vel", "l":"{0}", "r":"{0}"}}'
+                result = self.client.publish(self.topic_velocity, message)
+                status = result[0]
+                if status == 0:
+                    print(f"Mensagem '{message}' enviada para o tópico '{self.topic_velocity}'")
+                else:
+                    print(f"Falha ao enviar mensagem para o tópico '{self.topic_velocity}'")
                 break
 
 ####
