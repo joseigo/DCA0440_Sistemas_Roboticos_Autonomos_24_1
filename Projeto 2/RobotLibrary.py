@@ -168,10 +168,10 @@ class RobotController:
 
         k1 = 0.8
         k2 = 0.8
-        kd_theta = 0.4  # Ganho derivativo de orientação
-        kd_l = 0.4   # Ganho derivativo de posição
+        kd_theta = 2.4  # Ganho derivativo de orientação
+        kd_l = 0.6   # Ganho derivativo de posição
 
-        alpha = 0.1  # Escolher fator de filtro
+        alpha = 1.2  # Escolher fator de filtro
         d_erro_theta_filtered = alpha * d_erro_theta + (1 - alpha) * self.prevError[0]
         d_dl_filtered = alpha * d_dl + (1 - alpha) * self.prevError[1]
 
@@ -195,10 +195,11 @@ class RobotController:
         returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
         return np.array([pos[0], pos[1], ori[2]])
 
-    def control_loop(self, t_limit=1000):
+    def control_loop(self, t_limit=100, point_change_interval=0.7):
         PathPoint = 0
         startTime = time.time()
         lastTime = startTime
+        last_point_change_time = startTime
         t = 0
 
         while True:
@@ -212,8 +213,9 @@ class RobotController:
 
             v, w = self.get_positioning_control(q, [self.pathx[int(PathPoint)], self.pathy[int(PathPoint)]], dt)
 
-            if np.sqrt((self.pathx[int(PathPoint)] - q[0])**2 + (self.pathy[int(PathPoint)] - q[1])**2) <= 0.1:
+            if now - last_point_change_time >= point_change_interval:
                 PathPoint += 1
+                last_point_change_time = now
 
             wr = ((2.0 * v) + (w * self.L)) / (2.0 * self.r)
             wl = ((2.0 * v) - (w * self.L)) / (2.0 * self.r)
@@ -227,7 +229,7 @@ class RobotController:
             t += dt
             lastTime = now
 
-            if np.sqrt((self.qf[0] - q[0])**2 + (self.qf[1] - q[1])**2) <= 0.001 or PathPoint > self.npoints- 1 or t > t_limit:
+            if np.sqrt((self.qf[0] - q[0])**2 + (self.qf[1] - q[1])**2) <= 0.001 or PathPoint > self.npoints - 1 or t > t_limit:
                 sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, 0, sim.simx_opmode_oneshot_wait)
                 sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, 0, sim.simx_opmode_oneshot_wait)
                 break
@@ -324,19 +326,21 @@ class RobotController:
         beta = 20
         threshold = 0.2
         nPoints = 0
-
-
+        
         while np.linalg.norm(current_pos - self.qf[0:2]) > threshold:
+            
             ix = np.argmin(np.abs(x - current_pos[0]))
             iy = np.argmin(np.abs(y - current_pos[1]))
 
             grad = np.array([grad_U_y[iy, ix],grad_U_x[iy, ix]])
 
             repulsive_force = -grad
-            if np.linalg.norm(current_pos - self.qf[0:2]) > 0.7:
+
+            if (np.linalg.norm(current_pos - self.qf[0:2]) > 0.7):
                 tangential_force = calculate_tangential_force(grad)
             else:
                 tangential_force = 0
+
             total_force = repulsive_force + beta * tangential_force
 
             current_pos += alpha * total_force
@@ -353,11 +357,8 @@ class RobotController:
 
         path = np.array(path)
 
-        window_length = min(5, len(path[:, 0]))
-        if window_length % 2 == 0:
-            window_length += 1  #deve ser ímpar
-
-        polyorder = min(2, window_length - 1)
+        window_length = 51 
+        polyorder = 7  
 
         smoothed_path_x = savgol_filter(path[:, 0], window_length, polyorder)
         smoothed_path_y = savgol_filter(path[:, 1], window_length, polyorder)
@@ -389,12 +390,13 @@ class RobotController:
             plt.tight_layout()
 
             plt.show()
-            
+
     def get_generated_path_manha(self,printmap):
         
         def attractive_potential(size, goal,obstacles):
 
             U_tot = np.zeros((size, size), dtype=int)
+
             for rect in obstacles:
                 x, y, width, height = rect
                 y = -y
@@ -501,116 +503,80 @@ class RobotController:
 
     def get_generated_path_graph(self, n_grade=50, printmap=True):
 
-        def is_point_in_rectangle(px, py, rect):
-            x, y, width, height = rect
-            width = width + 1
-            height = height + 1
-            return x <= px <= x + width and y <= py <= y + height
-
         def real2grid(real_x, real_y, n):
-            min_val, max_val = -5, 5
-            cell_size = (max_val - min_val) / n 
-            j = int((real_x - min_val) / cell_size)
-            i = int((max_val - real_y) / cell_size)
+            
+            min_val, max_val = -5.0, 5.0
+            
+            i = np.clip(int(n/2) + int(-real_y * (n/(max_val - min_val))),0,n-1)
+            j = np.clip(int(n/2) + int(real_x * (n/(max_val - min_val))),0,n-1)
+
             return (i, j)
 
         def grid2real(i, j, n):
-            min_val, max_val = -5, 5
-            cell_size = (max_val - min_val) / n
-            real_x = min_val + (i+0.5) * cell_size 
-            real_y = max_val - (j+0.5) * cell_size 
+            
+            min_val, max_val = -5.0, 5.0
+
+            real_x = np.clip((j - n/2)/(n/(max_val - min_val)),min_val,max_val)
+            real_y = -np.clip((i - n/2)/(n/(max_val - min_val)),min_val,max_val)
+
             return real_x, real_y
         
         n = n_grade
 
         grid = np.zeros((n, n))
 
-        cell_size = 10/n
+        for rect in self.map:
+            x, y, width, height = rect
+            y = -y
+            xui = int(np.clip(n/2 + int((x+((width+1)/2)) * n/10),0,n-1))
+            xli = int(np.clip(n/2 + int((x-((width+1)/2)) * n/10),0,n-1))
 
-        x = np.linspace(-5, 5, n)
-        y = np.linspace(-5, 5, n)
-        X, Y = np.meshgrid(x, y)
+            yui = int(np.clip(n/2 + int((y+((height+1)/2)) * n/10),0,n-1))
+            yli = int(np.clip(n/2 + int((y-((height+1)/2)) * n/10),0,n-1))
 
-        for i in range(X.shape[0]):
-            for j in range(X.shape[1]):
-                px, py = X[i, j], Y[i, j]
-                point_in_rectangles = [is_point_in_rectangle(px, py, rect) for rect in self.map]
-                if any(point_in_rectangles):
-                    grid[i][j] = 1
+            
+            grid[yli:yui, xli:xui] = 1
 
         G = nx.grid_2d_graph(n, n) 
         node_colors = {node: 'green' for node in G.nodes()}
 
         for r in range(n):
             for c in range(n):
-                if grid[r][c] == 1:  
+                if grid[r][c] == 1 or r == 0 or r == n-1 or c == 0 or c == n-1:  
                     G.remove_node((r,c))
         
-        if(printmap):
-            #Plot dos nós livre
-            fig = plt.figure(figsize=(10,10), dpi=100)
-            ax = fig.add_subplot(111, aspect='equal')
-
-            ax.grid(which='major', axis='both', linestyle='-', color='k', linewidth=1)
-            ax.set_xticks(np.arange(-5, 5, cell_size))
-            ax.set_yticks(np.arange(-5, 5, cell_size))
-            obj = ax.imshow(grid, cmap='Greys', extent=(-5,5, -5,5))
-
-            posn = {node: (grid2real(node[1],node[0],n)) for node in G.nodes()}
-            nx.draw(G, posn, font_size=0,node_color="g", with_labels=False, node_size=10, ax=ax) 
-            plt.draw()
-
-            #Plot dos pontos de partida e chegada
-          
+         
         start_node = real2grid(self.qi[0], self.qi[1], n)
         node_colors[start_node] = 'red'
         end_node = real2grid(self.qf[0], self.qf[1], n)
         node_colors[end_node] = 'yellow'
 
+        path = nx.shortest_path(G, source=start_node, target=end_node)
+
+        for node in path:
+            node_colors[node] = 'blue'
+
+        node_colors_list = [node_colors.get(node, 'green') for node in G.nodes()]
+
         if(printmap):
-
-            fig, ax = plt.subplots(figsize=(10, 10), dpi=100)
-            ax = fig.add_subplot(111, aspect='equal')
-
-            ax.grid(which='major', axis='both', linestyle='-', color='k', linewidth=1)
-            ax.set_xticks(np.arange(-5, 5, cell_size))
-            ax.set_yticks(np.arange(-5, 5, cell_size))
-            obj = ax.imshow(grid, cmap='Greys', extent=(-5, 5, -5, 5))
-
             node_colors_list = [node_colors[node] for node in G.nodes()]
-            posz = {node: grid2real(node[1], node[0], n) for node in G.nodes()}
-            nx.draw(G, posz, font_size=0, with_labels=False, node_size=10, node_color=node_colors_list, ax=ax) 
-            plt.draw()
 
-            #plot caminho
             fig = plt.figure(figsize=(10,10), dpi=100)
             ax = fig.add_subplot(111, aspect='equal')
 
             ax.grid(which='major', axis='both', linestyle='-', color='k', linewidth=1)
-            ax.set_xticks(np.arange(-5, 5, cell_size))
-            ax.set_yticks(np.arange(-5, 5, cell_size))
+            obj = ax.imshow(grid, cmap='Greys')
 
-        path = nx.shortest_path(G, source=start_node, target=end_node)
-
-        if(printmap):
-            for node in path:
-                node_colors[node] = 'blue'
-
-            node_colors_list = [node_colors[node] for node in G.nodes()]
-
-            posz = {node: grid2real(node[1], node[0], n) for node in G.nodes()}
-            nx.draw(G, posz, font_size=0, with_labels=False, node_size=10, node_color=node_colors_list, ax=ax) 
-            obj = ax.imshow(grid, cmap='Greys', extent=(-5, 5, -5,5))
-            edge_list = [(path[i], path[i+1]) for i in range(len(path)-1)]
-            nx.draw_networkx_edges(G, posz, edgelist=edge_list, edge_color='blue', width=2, ax=ax)
-            plt.title("Caminho")
+            posn = {node: (node[1],node[0]) for node in G.nodes()}
+            nx.draw(G, posn, font_size=0, node_color=node_colors_list, with_labels=False, node_size=10, ax=ax)            
             plt.draw()
+
 
         x_path = []
         y_path = []
 
         for pos in path:
-            px, py = grid2real(pos[1], pos[0], n)
+            px, py = grid2real(pos[0], pos[1], n)
             x_path.append(px)
             y_path.append(py)
         
@@ -618,19 +584,17 @@ class RobotController:
         self.pathy = y_path.copy()
         self.npoints = len(x_path)
 
-        
-
-
     def send_generated_path(self):
+
         returnCode, pathHandle = sim.simxGetObjectHandle(self.clientID, "FloorPath", sim.simx_opmode_oneshot_wait)
+        res = sim.simxSetObjectPosition(self.clientID, pathHandle, -1, [self.qi[0], self.qi[1], 0], sim.simx_opmode_oneshot)
+        
 
         for x, y in zip(self.pathx, self.pathy):
             res = sim.simxSetObjectPosition(self.clientID, pathHandle, -1, [x, y, 0], sim.simx_opmode_oneshot)
             time.sleep(0.07)
         return res
 
-
-####
 #### PLOTS dos dados
 ####
 
@@ -712,40 +676,11 @@ class RobotController:
         ax2.set_title('Espaço de Configuração 2D')
         ax2.set_aspect('equal', adjustable='box')
 
+
         # Adicionar legenda ao segundo subplot
         ax2.legend()
-
+       
         # Ajustar o layout para melhor visualização
         plt.tight_layout()
 
         plt.show()
-
-
-def main():
-    print('Program started')
-    sim.simxFinish(-1)
-    clientID = sim.simxStart('127.0.0.1', 19999, True, True, 5000, 5)
-
-    if clientID != -1:
-        print('Connected to remote API server')
-        controller = RobotController(clientID)
-
-        controller.get_map()
-
-        controller.plot_map()
-
-        controller.get_generated_path_potential(True)
-
-        controller.send_generated_path()
-
-        controller.control_loop()
-        
-        sim.simxFinish(clientID)
-    else:
-        print('Failed connecting to remote API server')
-
-    print('Program ended')
-
-if __name__ == "__main__":
-    main()
-
