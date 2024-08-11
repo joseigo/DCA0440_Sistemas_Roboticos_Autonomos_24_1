@@ -784,7 +784,7 @@ class RobotController:
                 return 100.0
             return value
         
-        z_max = 1.5 # m
+        z_max = 1 # m
 
         alpha = self.sensor_oppening_angles[i]
         e = 0.15 + 0.05 * np.random.randn()
@@ -962,4 +962,13 @@ class RobotController:
         # Ajustar o layout para melhor visualização
         plt.tight_layout()
 
+        plt.show()
+
+    def plot_occupancy_grid(self):
+
+        plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
+        plt.colorbar(label='Probabilidade de Ocupação (%)')
+        plt.title('Grade de Ocupação')
+        plt.xlabel('X')
+        plt.ylabel('Y')
         plt.show()
