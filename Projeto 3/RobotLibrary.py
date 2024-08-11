@@ -1,8 +1,11 @@
+import threading
 import time
+from collections import deque
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from IPython.display import clear_output
 from pynput import keyboard
 from scipy.signal import savgol_filter
 
@@ -21,10 +24,22 @@ class RobotController:
         self.initialize_handles()
 
         self.qi = self.get_robot_position()
+        self.qf = []
 
         self.L = 0.331  # Metros
         self.r = 0.09751  # Metros
         self.prevError = np.array([0, 0])
+
+        self.qs = np.zeros((8, 3))-5
+
+        self.sensor_angles = np.deg2rad(np.array([-90, -50, -30, -10, 10, 30, 50, 90]))
+        self.sensor_oppening_angles = np.deg2rad( np.array([20, 20, 20, 20, 20, 20, 20, 20]))
+        self.orientation_history = deque(maxlen=20)
+
+        self.map_size = np.array([-5, 5]) # Metros
+        self.cell_size = 0.1
+        self.grid = np.array([])
+        self.map = []
 
         self.lx = []
         self.ly = []
@@ -36,11 +51,8 @@ class RobotController:
 
         self.pathx = []
         self.pathy = []
-        self.npoints = 0
-        self.qf = []
-
-
-        self.map = []
+        self.npoints = 0      
+    
 
     def initialize_handles(self):
         self.returnCode, self.robotHandle = sim.simxGetObjectHandle(self.clientID, self.robotName, sim.simx_opmode_oneshot_wait)
@@ -48,9 +60,20 @@ class RobotController:
         self.returnCode, self.r_wheel = sim.simxGetObjectHandle(self.clientID, self.robotName + '_rightMotor', sim.simx_opmode_oneshot_wait)
         self.returnCode, self.goalFrame = sim.simxGetObjectHandle(self.clientID, 'Goal', sim.simx_opmode_oneshot_wait)
 
+        self.returnCode, self.ultrasonic_sensor_1 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor1', sim.simx_opmode_blocking)
+        self.returnCode, self.ultrasonic_sensor_2 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor2', sim.simx_opmode_blocking)
+        self.returnCode, self.ultrasonic_sensor_3 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor3', sim.simx_opmode_blocking)
+        self.returnCode, self.ultrasonic_sensor_4 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor4', sim.simx_opmode_blocking)
+        self.returnCode, self.ultrasonic_sensor_5 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor5', sim.simx_opmode_blocking)
+        self.returnCode, self.ultrasonic_sensor_6 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor6', sim.simx_opmode_blocking)
+        self.returnCode, self.ultrasonic_sensor_7 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor7', sim.simx_opmode_blocking)
+        self.returnCode, self.ultrasonic_sensor_8 = sim.simxGetObjectHandle(self.clientID, self.robotName + '_ultrasonicSensor8', sim.simx_opmode_blocking)
+
+    def set_map_size(self, height, width):
+        self.map_size = np.array([height,width])
+
 ####
-#### Metodos de captura automática do mapa 2d
-####
+#### Metodos de captura automática do mapa  
 
     def get_object_bounding_box(self, obj_handle):
         res, min_x = sim.simxGetObjectFloatParameter(self.clientID, obj_handle, sim.sim_objfloatparam_modelbbox_min_x, sim.simx_opmode_blocking)
@@ -192,9 +215,18 @@ class RobotController:
         return angle
   
     def get_robot_position(self):
-        returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
-        returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
+        returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
+        returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
         return np.array([pos[0], pos[1], ori[2]])
+    
+    def get_filtered_orientation(self):
+        returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_buffer)
+        returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
+        
+        current_orientation = ori[2]
+        self.orientation_history.append(current_orientation)
+        filtered_orientation = sum(self.orientation_history) / len(self.orientation_history)
+        return filtered_orientation
 
     def control_loop(self, t_limit=100, point_change_interval=0.7):
         PathPoint = 0
@@ -235,6 +267,115 @@ class RobotController:
                 sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, 0, sim.simx_opmode_oneshot_wait)
                 break
 
+    def manual_control_loop(self):
+
+        # Variáveis de controle
+        forward_velocity = 2.0
+        turn_velocity = 1.5
+
+        running = True
+        z = np.ones(8)*1.5
+        
+        def on_press(key):
+    
+            try:
+                if isinstance(key, keyboard.KeyCode):
+                    if key.char == 'w':
+                        sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, forward_velocity, sim.simx_opmode_streaming)
+                        sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, forward_velocity, sim.simx_opmode_streaming)
+                    elif key.char == 's':
+                        sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, -forward_velocity, sim.simx_opmode_streaming)
+                        sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, -forward_velocity, sim.simx_opmode_streaming)
+                    elif key.char == 'a':
+                        sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, -turn_velocity, sim.simx_opmode_streaming)
+                        sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, turn_velocity, sim.simx_opmode_streaming)
+                    elif key.char == 'd':
+                        sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, turn_velocity, sim.simx_opmode_streaming)
+                        sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, -turn_velocity, sim.simx_opmode_streaming)
+            except AttributeError:
+                pass
+
+
+        def on_release(key):
+            if isinstance(key, keyboard.KeyCode) and key.char in ['w', 'a', 's', 'd']:
+                sim.simxSetJointTargetVelocity(self.clientID, self.l_wheel, 0, sim.simx_opmode_streaming)
+                sim.simxSetJointTargetVelocity(self.clientID, self.r_wheel, 0, sim.simx_opmode_streaming)
+
+            if key == keyboard.Key.esc:
+                nonlocal running
+                running = False
+                return False
+            
+        def read_sensor():
+
+            while running:
+                nonlocal z
+                distances = []
+
+                for i in range(3, 7):  # Para sensores de 1 a 8
+                    _, _, detected_point, _, _ = sim.simxReadProximitySensor(
+                        clientID=self.clientID,
+                        sensorHandle=getattr(self, f'ultrasonic_sensor_{i}'), 
+                        operationMode=sim.simx_opmode_buffer
+                    )
+                    distance = np.sqrt(detected_point[0]**2 + detected_point[1]**2 + detected_point[2]**2)
+                    distance = distance if 0.0 < distance <= 1 else 1.5
+                    distances.append(distance)
+                    res, pos_sens = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
+                    # res, ori_sens = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
+                    ori_sens = self.get_filtered_orientation()
+                    # print("sensor", i,":", ori_sens)
+            
+                    self.qs[i-1, :2] = pos_sens[:2]  # Atualiza as primeiras duas colunas com a posição (x, y)
+                    self.qs[i-1, 2] = self.angle_wrap(ori_sens + self.sensor_angles[i-1])  # Atualiza a terceira coluna com a orientação (theta)
+
+                z[0] = distances[0]
+                z[1] = distances[1]
+                z[2] = distances[2]
+                z[3] = distances[3]
+                z[4] = distances[4]
+                z[5] = distances[5]
+                z[6] = distances[6]
+                z[7] = distances[7]
+
+
+                # res, pos_sens = sim.simxGetObjectPosition(self.clientID, self.ultrasonic_sensor_1, -1, sim.simx_opmode_streaming) 
+                # res, ori_sens =  sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
+                # # self.qs[:2] = pos_sens[:2]
+                # # self.qs[2] = self.angle_wrap(ori_sens[2])
+                # self.qs = np.array([pos_sens[0], pos_sens[1],  self.angle_wrap(ori_sens[2])])
+                 # Atualiza a posição e orientação do sensor na matriz qs
+               
+
+        def update_map_grid():
+            while running:
+                for i in range(3, 7):
+                    clear_output(wait=True)
+                    self.fill_map_grid(z[i-1], i-1)
+                time.sleep(0.05)
+
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_1, sim.simx_opmode_streaming)
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_2, sim.simx_opmode_streaming)
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_3, sim.simx_opmode_streaming)
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_4, sim.simx_opmode_streaming)
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_5, sim.simx_opmode_streaming)
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_6, sim.simx_opmode_streaming)
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_7, sim.simx_opmode_streaming)
+        sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_8, sim.simx_opmode_streaming)
+
+        sensor_thread = threading.Thread(target=read_sensor)
+        map_thread = threading.Thread(target=update_map_grid)
+    
+        sensor_thread.start()
+        map_thread.start()
+
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+            listener.join()  
+           
+        sensor_thread.join()
+        map_thread.join()
+        
+       
 
 ####
 #### Métodos de geração de trajetória
@@ -596,7 +737,135 @@ class RobotController:
             res = sim.simxSetObjectPosition(self.clientID, pathHandle, -1, [x, y, 0], sim.simx_opmode_oneshot)
             time.sleep(0.07)
         return res
+    
+####
+#### Geração do mapa
+####
 
+    def clear_map_grid(self):
+
+        # res, pos_sens = sim.simxGetObjectPosition(self.clientID, self.ultrasonic_sensor_1, -1, sim.simx_opmode_streaming) 
+        # res, ori_sens =  sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
+        # # self.qs[2] = self.angle_wrap(ori_sens[2])
+        # self.qs = np.array([pos_sens[0], pos_sens[1], self.angle_wrap(ori_sens[2])])
+        for i in range(3, 7):  # Para sensores de 1 a 8
+            res, pos_sens = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
+            res, ori_sens = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
+            self.qs[i-1, :2] = pos_sens[:2]  # Atualiza as primeiras duas colunas com a posição (x, y)
+            self.qs[i-1, 2] = self.angle_wrap(ori_sens[2] + self.sensor_angles[i-1])  # Atualiza a terceira coluna com a orientação (theta)
+     
+        cx = np.arange(self.map_size[0], self.map_size[1]+self.cell_size, self.cell_size)
+        cy = np.arange(self.map_size[1], self.map_size[0]-self.cell_size, -self.cell_size)
+      
+        col = len(cx)
+        lin = len(cy)
+    
+        self.grid = np.ones((col, lin)) * 50
+
+        plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
+        plt.show()
+    
+    def fill_map_grid(self, z, i):
+
+        def check_angle(ang_l, ang_h, phi):
+            if ang_l < ang_h:
+                if ang_l <= phi <= ang_h:
+                    return True
+            elif ang_l > ang_h:
+                if ang_l <= phi or phi <= ang_h:
+                    return True
+            return False
+        
+        def cell_value_sat(value):
+            if value < 0.0:
+                return 0.0
+            elif value > 100.0:
+                return 100.0
+            return value
+        
+        z_max = 1.5 # m
+        alpha = self.sensor_oppening_angles[i]
+        e = 0.15 + 0.05 * np.random.randn()
+
+        r_l = (z - e/2)
+        r_h = (z + e/2)
+
+        # ang_l = (self.angle_wrap(self.qs[i, 2]) - alpha/2)
+        # ang_h = (self.angle_wrap(self.qs[i, 2]) + alpha/2)
+
+        # ang_l = self.angle_wrap(ang_l)
+        # ang_h = self.angle_wrap(ang_h)
+
+        cx = np.arange(self.map_size[0], self.map_size[1]+self.cell_size, self.cell_size)
+        cy = np.arange(self.map_size[1], self.map_size[0]-self.cell_size, -self.cell_size)
+
+        sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
+        returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_buffer)
+        ori = self.get_filtered_orientation()
+        
+        xr, yr, tr = pos[0], pos[1], ori
+        for yi in range(self.grid.shape[1]):
+            for xi in range(self.grid.shape[0]):
+
+                xm, ym = cx[xi], cy[yi]
+                
+                # time.sleep(0.1)
+                # print(xr,yr,tr)
+
+                dist = np.sqrt((xm-xr)**2 + (ym-yr)**2)
+                phi = self.angle_wrap(np.arctan2((ym-yr)**2, (xm-xr)**2) - (self.qs[i, 2]))
+                print(phi)
+
+                # dist = np.sqrt((xm-self.qs[i, 0])**2 + (ym-self.qs[i, 1])**2)
+                # phi = np.arctan2((ym-self.qs[i, 1]), (xm-self.qs[i, 0]))
+                # print(z)
+
+                # if z < 0.001:
+                #     continue
+                # if z > 2:
+                #     if 0.01 <= dist <= 1:
+                #         if check_angle(ang_h, ang_l, phi):
+                #             self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 50)
+                #             continue
+
+                if (dist > min(z_max, r_h)) or (abs(phi) > alpha/2):
+                    # print("Aqui1")
+                    # print("C1:", dist > min(z_max, r_h))
+                    # print(dist, min(z_max, r_h) )
+                    continue
+
+                elif (z < z_max) and (abs(dist - z) < e/2) and (abs(phi) < alpha/2):
+                    self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 30)
+                    # continue
+                    # print("Aqui2")
+
+                elif (dist <= r_l) and (abs(phi) < alpha/2):
+                    self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 15)
+                    # continue
+                    # print("Aqui3")
+
+                
+
+                # if dist < 0.01:
+                #     self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 15)
+                # elif dist > 1:
+                #     continue
+                #     # self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 0)
+                # elif r_l <= dist <= r_h:
+                #     if check_angle(ang_l, ang_h, phi):
+                #         self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 30)
+                # elif 0.01 < dist < r_l:
+                #     if check_angle(ang_l, ang_h, phi):
+                #         self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 15)
+                # elif r_h < dist < 1.0:
+                #     continue
+                #     # self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 0 )
+            
+            
+        plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
+        plt.show()
+
+####
 #### PLOTS dos dados
 ####
 
