@@ -34,7 +34,7 @@ class RobotController:
 
         self.sensor_angles = np.deg2rad(np.array([-90, -50, -30, -10, 10, 30, 50, 90]))
         self.sensor_oppening_angles = np.deg2rad( np.array([20, 20, 20, 20, 20, 20, 20, 20]))
-        self.orientation_history = deque(maxlen=20)
+        self.orientation_history = deque(maxlen=10)
 
         self.map_size = np.array([-5, 5]) # Metros
         self.cell_size = 0.1
@@ -220,12 +220,13 @@ class RobotController:
         return np.array([pos[0], pos[1], ori[2]])
     
     def get_filtered_orientation(self):
-        returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_buffer)
+        returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
         returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
         
         current_orientation = ori[2]
         self.orientation_history.append(current_orientation)
         filtered_orientation = sum(self.orientation_history) / len(self.orientation_history)
+
         return filtered_orientation
 
     def control_loop(self, t_limit=100, point_change_interval=0.7):
@@ -274,7 +275,7 @@ class RobotController:
         turn_velocity = 1.5
 
         running = True
-        z = np.ones(8)*1.5
+        z = np.ones(8)*5
         
         def on_press(key):
     
@@ -310,7 +311,7 @@ class RobotController:
 
             while running:
                 nonlocal z
-                distances = []
+                # distances = []
 
                 for i in range(3, 7):  # Para sensores de 1 a 8
                     _, _, detected_point, _, _ = sim.simxReadProximitySensor(
@@ -319,24 +320,24 @@ class RobotController:
                         operationMode=sim.simx_opmode_buffer
                     )
                     distance = np.sqrt(detected_point[0]**2 + detected_point[1]**2 + detected_point[2]**2)
-                    distance = distance if 0.0 < distance <= 1 else 1.5
-                    distances.append(distance)
-                    res, pos_sens = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
-                    # res, ori_sens = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
-                    ori_sens = self.get_filtered_orientation()
-                    # print("sensor", i,":", ori_sens)
+                    distance = distance if 0.0 < distance <= 1.5 else 5
+                    z[i-1] = distance
+                    # res, pos_sens = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
+                    # # res, ori_sens = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
+                    # ori_sens = self.get_filtered_orientation()
+                    # # print("sensor", i,":", ori_sens)
             
-                    self.qs[i-1, :2] = pos_sens[:2]  # Atualiza as primeiras duas colunas com a posição (x, y)
-                    self.qs[i-1, 2] = self.angle_wrap(ori_sens + self.sensor_angles[i-1])  # Atualiza a terceira coluna com a orientação (theta)
+                    # self.qs[i-1, :2] = pos_sens[:2]  # Atualiza as primeiras duas colunas com a posição (x, y)
+                    # self.qs[i-1, 2] = self.angle_wrap(ori_sens + self.sensor_angles[i-1])  # Atualiza a terceira coluna com a orientação (theta)
 
-                z[0] = distances[0]
-                z[1] = distances[1]
-                z[2] = distances[2]
-                z[3] = distances[3]
-                z[4] = distances[4]
-                z[5] = distances[5]
-                z[6] = distances[6]
-                z[7] = distances[7]
+                # z[0] = distances[0]
+                # z[1] = distances[1]
+                # z[2] = distances[2]
+                # z[3] = distances[3]
+                # z[4] = distances[4]
+                # z[5] = distances[5]
+                # z[6] = distances[6]
+                # z[7] = distances[7]
 
 
                 # res, pos_sens = sim.simxGetObjectPosition(self.clientID, self.ultrasonic_sensor_1, -1, sim.simx_opmode_streaming) 
@@ -750,7 +751,7 @@ class RobotController:
         # self.qs = np.array([pos_sens[0], pos_sens[1], self.angle_wrap(ori_sens[2])])
         for i in range(3, 7):  # Para sensores de 1 a 8
             res, pos_sens = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
-            res, ori_sens = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
+            res, ori_sens = sim.simxGetObjectOrientation(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
             self.qs[i-1, :2] = pos_sens[:2]  # Atualiza as primeiras duas colunas com a posição (x, y)
             self.qs[i-1, 2] = self.angle_wrap(ori_sens[2] + self.sensor_angles[i-1])  # Atualiza a terceira coluna com a orientação (theta)
      
@@ -784,6 +785,7 @@ class RobotController:
             return value
         
         z_max = 1.5 # m
+
         alpha = self.sensor_oppening_angles[i]
         e = 0.15 + 0.05 * np.random.randn()
 
@@ -800,10 +802,16 @@ class RobotController:
         cy = np.arange(self.map_size[1], self.map_size[0]-self.cell_size, -self.cell_size)
 
         sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
+        sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
+
         returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_buffer)
-        ori = self.get_filtered_orientation()
+        res, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_buffer)
         
-        xr, yr, tr = pos[0], pos[1], ori
+        # ori = self.get_filtered_orientation()
+        
+        xr, yr, ts = pos[0], pos[1], ori[2]
+        # print(f'Robô:', np.rad2deg(ts))
+        # print(f'Sensor {i}: Z :{z} angulo:', np.rad2deg(ts + self.sensor_angles[i]))
         for yi in range(self.grid.shape[1]):
             for xi in range(self.grid.shape[0]):
 
@@ -813,8 +821,8 @@ class RobotController:
                 # print(xr,yr,tr)
 
                 dist = np.sqrt((xm-xr)**2 + (ym-yr)**2)
-                phi = self.angle_wrap(np.arctan2((ym-yr)**2, (xm-xr)**2) - (self.qs[i, 2]))
-                print(phi)
+                phi = self.angle_wrap(np.arctan2((ym-yr), (xm-xr)) - (ts + self.sensor_angles[i]))
+               
 
                 # dist = np.sqrt((xm-self.qs[i, 0])**2 + (ym-self.qs[i, 1])**2)
                 # phi = np.arctan2((ym-self.qs[i, 1]), (xm-self.qs[i, 0]))
