@@ -36,7 +36,8 @@ class RobotController:
         self.sensor_oppening_angles = np.deg2rad( np.array([20, 20, 20, 20, 20, 20, 20, 20]))
         self.orientation_history = deque(maxlen=10)
 
-        self.grid = np.full((100, 100), 50)
+        self.grid = np.full((100, 100), 250)
+        self.occgrid = None
         self.map_size = np.array([-5, 5]) # Metros
         self.cell_size = 0.1
         self.map = []
@@ -170,6 +171,12 @@ class RobotController:
 
         self.map = rectangles.copy()
 
+    def save_map_file(self, filename):
+        np.save(filename, self.grid)
+
+    def get_map_file(self, filename):
+        self.grid = np.load(filename)
+        
 ####
 #### Métodos de controle e posicionamento
 ####
@@ -218,6 +225,8 @@ class RobotController:
     def get_robot_position(self):
         returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
         returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
+        print(pos[0],pos[1])
+        print(ori[2])
         return np.array([pos[0], pos[1], ori[2]])
     
     def get_filtered_orientation(self):
@@ -351,16 +360,16 @@ class RobotController:
                     for x, y in zip(x_vals, y_vals):
                         x_round = int(round(x))
                         y_round = int(round(y))
-                        if grid[y_round, x_round] > 1:
-                            grid[y_round, x_round] -= 1
+                        if grid[y_round, x_round] > 2:
+                            grid[y_round, x_round] -= 2
                         
                         last_points.append((x_round, y_round))
-                        if len(last_points) > 5:
+                        if len(last_points) > 20:
                             last_points.pop(0)
 
                     for (x_round, y_round) in last_points:
-                        if detected and grid[y_round, x_round] < 89:
-                            grid[y_round, x_round] += 12
+                        if detected and grid[y_round, x_round] < 1012:
+                            grid[y_round, x_round] += 24
 
                 for x, y in zip(x_values, y_values):
                     draw_line(sensor_grid[0], sensor_grid[1], x, y)
@@ -389,8 +398,7 @@ class RobotController:
                         plot_arc_on_grid(self.grid,pos_sens,ori_sens,distance,activated)
                     
                     clear_output(wait=True)
-                    plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
-                    plt.show()
+                    self.plot_occupancy_grid()
 
                 # res, pos_sens = sim.simxGetObjectPosition(self.clientID, self.ultrasonic_sensor_1, -1, sim.simx_opmode_streaming) 
                 # res, ori_sens =  sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
@@ -429,7 +437,24 @@ class RobotController:
         sensor_thread.join()
         # map_thread.join()
         
-       
+    def mark_occupied(self, threshold=250, block_size=3):
+        # Initialize an empty occupancy grid of the same size
+        occupancy_grid = np.zeros_like(self.grid, dtype=np.int32)
+        
+        # Iterate over each point in the matrix
+        for i in range((self.grid).shape[0]):
+            for j in range((self.grid).shape[1]):
+                if self.grid[i, j] > threshold:
+                    # Determine the boundaries of the 4x4 block (including boundary checks)
+                    x_min = max(i - block_size//2, 0)
+                    x_max = min(i + block_size//2 + 1, self.grid.shape[0])
+                    y_min = max(j - block_size//2, 0)
+                    y_max = min(j + block_size//2 + 1, self.grid.shape[1])
+                    
+                    # Mark the 4x4 block as occupied
+                    occupancy_grid[x_min:x_max, y_min:y_max] = 1
+
+        self.occgrid = occupancy_grid.copy()
 
 ####
 #### Métodos de geração de trajetória
@@ -698,6 +723,117 @@ class RobotController:
 
             plt.show()
 
+    def get_generated_path_manha_occ(self,printmap):
+        
+        def translate_to_grid(pos, grid_size=100, real_size=10):
+            grid_pos_x = int((pos[0] + real_size / 2) / real_size * grid_size)
+            grid_pos_y = int((-pos[1] + real_size / 2) / real_size * grid_size)
+            return np.clip(grid_pos_x, 0, grid_size-1), np.clip(grid_pos_y, 0, grid_size-1)
+        
+        def attractive_potential(size, goal):
+
+            U_tot = np.zeros((size, size), dtype=int)
+
+            for i in range((self.occgrid).shape[0]):
+                for j in range((self.occgrid).shape[1]):
+                    if self.occgrid[i,j] == 1:
+                        U_tot[i, j] = 10000
+                    else:
+                        U_tot[i,j] = 0
+
+            gxi, gyi = goal[0:2]
+
+            rows, cols = 100,100
+            stack = [(gxi,gyi)]
+
+            wave = 0
+
+            while stack:
+                wave += 1
+                current = stack.pop(0)
+
+                r, c = current
+                neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+                
+                for neighbor in neighbors:
+                    nr, nc = neighbor
+                    if (0 <= nr < rows and 0 <= nc < cols) and not U_tot[nr,nc]:
+                        stack.append(neighbor)
+                        U_tot[nr,nc] = wave
+
+            return U_tot
+        
+        self.qi = self.get_robot_position()
+        
+
+        start_x,start_y = translate_to_grid(self.qi[:2].copy())
+        end_x,end_y = translate_to_grid(self.qf[:2].copy())
+        
+        start = (start_y,start_x)
+        end = (end_y,end_x)
+
+        U_tot = attractive_potential(100,end)
+
+        def find_lowest_value_path(grid, start, end, search_range):
+            path = [start]
+            current_point = start
+            nPoints = 0
+
+            while current_point != end:
+                x, y = current_point
+                
+                x_min = max(0, x - search_range)
+                x_max = min(grid.shape[0], x + search_range + 1)
+                y_min = max(0, y - search_range)
+                y_max = min(grid.shape[1], y + search_range + 1)
+                
+                subgrid = grid[x_min:x_max, y_min:y_max]
+                
+                min_index = np.unravel_index(np.argmin(subgrid, axis=None), subgrid.shape)
+                min_point = (x_min + min_index[0], y_min + min_index[1])
+                
+                current_point = min_point
+                path.append(current_point)
+                
+                if (x_min <= end[0] < x_max) and (y_min <= end[1] < y_max):
+                    path.append(end)
+                    break
+                nPoints += 1
+                if(nPoints>=1000):
+                    break
+            
+            return path, nPoints
+        
+        
+        path,self.npoints = find_lowest_value_path(U_tot, start,end,2)
+
+        path_x, path_y = zip(*path) if path else ([], [])
+
+        print(path_x)
+        path_x = np.array(path_x)
+        path_y = np.array(path_y)
+
+        self.pathx = path_y.copy()
+        self.pathx = np.clip((self.pathx - 50)/10,-5,5)
+
+        self.pathy = path_x.copy()
+        self.pathy = - np.clip((self.pathy - 50)/10,-5,5)
+
+        if(printmap):
+            # Separate path coordinates
+            
+
+            # Plot the grid
+            plt.figure(figsize=(8, 8))
+            plt.imshow(U_tot, cmap='viridis', origin='upper', interpolation='none')
+            plt.colorbar(label='Poder Repulsivo')
+            plt.title('Mapa Manhatan')
+
+            # Plot the path
+            plt.plot(path_y, path_x, color='red', marker='o', markersize=3, linewidth=2, linestyle='-', alpha=0.7)
+
+            plt.show()
+
     def get_generated_path_graph(self, n_grade=50, printmap=True):
 
         def real2grid(real_x, real_y, n):
@@ -884,9 +1020,10 @@ class RobotController:
         plt.show()
 
     def plot_occupancy_grid(self):
-
-        plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
-        plt.colorbar(label='Probabilidade de Ocupação (%)')
+        pos_x, pos_y = (self.get_robot_position())[:2]
+        plt.imshow(self.grid, cmap='Greys', extent=[-5, 5, -5, 5])
+        plt.scatter(pos_x, pos_y, color='red')
+        # plt.colorbar(label='Probabilidade de Ocupação (%)')
         plt.title('Grade de Ocupação')
         plt.xlabel('X')
         plt.ylabel('Y')
