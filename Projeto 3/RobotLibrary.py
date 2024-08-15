@@ -36,9 +36,10 @@ class RobotController:
         self.sensor_oppening_angles = np.deg2rad( np.array([20, 20, 20, 20, 20, 20, 20, 20]))
         self.orientation_history = deque(maxlen=10)
 
+        self.grid = np.full((100, 100), 250)
+        self.occgrid = None
         self.map_size = np.array([-5, 5]) # Metros
         self.cell_size = 0.1
-        self.grid = np.array([])
         self.map = []
 
         self.lx = []
@@ -74,6 +75,7 @@ class RobotController:
 
 ####
 #### Metodos de captura automática do mapa  
+####
 
     def get_object_bounding_box(self, obj_handle):
         res, min_x = sim.simxGetObjectFloatParameter(self.clientID, obj_handle, sim.sim_objfloatparam_modelbbox_min_x, sim.simx_opmode_blocking)
@@ -169,6 +171,12 @@ class RobotController:
 
         self.map = rectangles.copy()
 
+    def save_map_file(self, filename):
+        np.save(filename, self.grid)
+
+    def get_map_file(self, filename):
+        self.grid = np.load(filename)
+        
 ####
 #### Métodos de controle e posicionamento
 ####
@@ -217,6 +225,8 @@ class RobotController:
     def get_robot_position(self):
         returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
         returnCode, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
+        print(pos[0],pos[1])
+        print(ori[2])
         return np.array([pos[0], pos[1], ori[2]])
     
     def get_filtered_orientation(self):
@@ -271,8 +281,8 @@ class RobotController:
     def manual_control_loop(self):
 
         # Variáveis de controle
-        forward_velocity = 2.0
-        turn_velocity = 1.5
+        forward_velocity = 3.0
+        turn_velocity = 2.0
 
         running = True
         z = np.ones(8)*5
@@ -309,36 +319,86 @@ class RobotController:
             
         def read_sensor():
 
+            def get_arc_section_limits(pos_sens, ori_sens, angle_range_deg=20, arc_radius=1):
+                angle_range_rad = np.radians(angle_range_deg)
+                half_angle = angle_range_rad / 2
+
+                start_angle = ori_sens - half_angle
+                end_angle = ori_sens + half_angle
+
+                start_x = pos_sens[0] + arc_radius * np.cos(start_angle)
+                start_y = pos_sens[1] + arc_radius * np.sin(start_angle)
+
+                end_x = pos_sens[0] + arc_radius * np.cos(end_angle)
+                end_y = pos_sens[1] + arc_radius * np.sin(end_angle)
+
+                return (start_x, start_y), (end_x, end_y)
+
+            def translate_to_grid(pos, grid_size=100, real_size=10):
+                grid_pos_x = int((pos[0] + real_size / 2) / real_size * grid_size)
+                grid_pos_y = int((-pos[1] + real_size / 2) / real_size * grid_size)
+                return np.clip(grid_pos_x, 0, grid_size-1), np.clip(grid_pos_y, 0, grid_size-1)
+
+            def plot_arc_on_grid(grid, pos_sens, ori_sens, distance, detected):
+
+                (start_x, start_y), (end_x, end_y) = get_arc_section_limits(pos_sens, ori_sens, 20, distance)
+                
+                start_grid = translate_to_grid((start_x, start_y))
+                end_grid = translate_to_grid((end_x, end_y))
+                sensor_grid = translate_to_grid(pos_sens)
+
+                arc_points = 10
+                x_values = np.linspace(start_grid[0], end_grid[0], arc_points)
+                y_values = np.linspace(start_grid[1], end_grid[1], arc_points)
+
+                def draw_line(x0, y0, x1, y1):
+                    line_points = 100
+                    x_vals = np.linspace(x0, x1, line_points)
+                    y_vals = np.linspace(y0, y1, line_points)
+                    last_points = []
+
+                    for x, y in zip(x_vals, y_vals):
+                        x_round = int(round(x))
+                        y_round = int(round(y))
+                        if grid[y_round, x_round] > 2:
+                            grid[y_round, x_round] -= 2
+                        
+                        last_points.append((x_round, y_round))
+                        if len(last_points) > 20:
+                            last_points.pop(0)
+
+                    for (x_round, y_round) in last_points:
+                        if detected and grid[y_round, x_round] < 1012:
+                            grid[y_round, x_round] += 24
+
+                for x, y in zip(x_values, y_values):
+                    draw_line(sensor_grid[0], sensor_grid[1], x, y)
+
+
             while running:
                 nonlocal z
                 # distances = []
-
-                for i in range(3, 7):  # Para sensores de 1 a 8
-                    _, _, detected_point, _, _ = sim.simxReadProximitySensor(
+                
+                for i in range(3,7):  # Para sensores de 1 a 8
+                    _, activated,detected_point, _, _ = sim.simxReadProximitySensor(
                         clientID=self.clientID,
                         sensorHandle=getattr(self, f'ultrasonic_sensor_{i}'), 
                         operationMode=sim.simx_opmode_buffer
                     )
                     distance = np.sqrt(detected_point[0]**2 + detected_point[1]**2 + detected_point[2]**2)
-                    distance = distance if 0.0 < distance <= 1.5 else 5
-                    z[i-1] = distance
-                    # res, pos_sens = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
-                    # # res, ori_sens = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
-                    # ori_sens = self.get_filtered_orientation()
-                    # # print("sensor", i,":", ori_sens)
-            
-                    # self.qs[i-1, :2] = pos_sens[:2]  # Atualiza as primeiras duas colunas com a posição (x, y)
-                    # self.qs[i-1, 2] = self.angle_wrap(ori_sens + self.sensor_angles[i-1])  # Atualiza a terceira coluna com a orientação (theta)
+                    distance = distance if 0.0 < distance <= 1.0 else 0.98
+                    res, pos = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
+                    res, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_blocking)
 
-                # z[0] = distances[0]
-                # z[1] = distances[1]
-                # z[2] = distances[2]
-                # z[3] = distances[3]
-                # z[4] = distances[4]
-                # z[5] = distances[5]
-                # z[6] = distances[6]
-                # z[7] = distances[7]
+                    pos_sens = pos[:2]
+                    ori_sens = ori[2]
 
+                    from math import isnan
+                    if not isnan(pos_sens[0]) and not isnan(pos_sens[1]) and not isnan(ori_sens):
+                        plot_arc_on_grid(self.grid,pos_sens,ori_sens,distance,activated)
+                    
+                    clear_output(wait=True)
+                    self.plot_occupancy_grid()
 
                 # res, pos_sens = sim.simxGetObjectPosition(self.clientID, self.ultrasonic_sensor_1, -1, sim.simx_opmode_streaming) 
                 # res, ori_sens =  sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
@@ -346,14 +406,14 @@ class RobotController:
                 # # self.qs[2] = self.angle_wrap(ori_sens[2])
                 # self.qs = np.array([pos_sens[0], pos_sens[1],  self.angle_wrap(ori_sens[2])])
                  # Atualiza a posição e orientação do sensor na matriz qs
-               
 
-        def update_map_grid():
-            while running:
-                for i in range(3, 7):
-                    clear_output(wait=True)
-                    self.fill_map_grid(z[i-1], i-1)
-                time.sleep(0.05)
+
+        # def update_map_grid():
+        #     while running:
+        #         for i in range(3, 7):
+        #             clear_output(wait=True)
+        #             self.fill_map_grid(z[i-1], i-1)
+        #         time.sleep(0.05)
 
         sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_1, sim.simx_opmode_streaming)
         sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_2, sim.simx_opmode_streaming)
@@ -365,18 +425,36 @@ class RobotController:
         sim.simxReadProximitySensor(self.clientID, self.ultrasonic_sensor_8, sim.simx_opmode_streaming)
 
         sensor_thread = threading.Thread(target=read_sensor)
-        map_thread = threading.Thread(target=update_map_grid)
+        # map_thread = threading.Thread(target=update_map_grid)
     
         sensor_thread.start()
-        map_thread.start()
+
+        # map_thread.start()
 
         with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
             listener.join()  
            
         sensor_thread.join()
-        map_thread.join()
+        # map_thread.join()
         
-       
+    def mark_occupied(self, threshold=250, block_size=3):
+        # Initialize an empty occupancy grid of the same size
+        occupancy_grid = np.zeros_like(self.grid, dtype=np.int32)
+        
+        # Iterate over each point in the matrix
+        for i in range((self.grid).shape[0]):
+            for j in range((self.grid).shape[1]):
+                if self.grid[i, j] > threshold:
+                    # Determine the boundaries of the 4x4 block (including boundary checks)
+                    x_min = max(i - block_size//2, 0)
+                    x_max = min(i + block_size//2 + 1, self.grid.shape[0])
+                    y_min = max(j - block_size//2, 0)
+                    y_max = min(j + block_size//2 + 1, self.grid.shape[1])
+                    
+                    # Mark the 4x4 block as occupied
+                    occupancy_grid[x_min:x_max, y_min:y_max] = 1
+
+        self.occgrid = occupancy_grid.copy()
 
 ####
 #### Métodos de geração de trajetória
@@ -645,6 +723,117 @@ class RobotController:
 
             plt.show()
 
+    def get_generated_path_manha_occ(self,printmap):
+        
+        def translate_to_grid(pos, grid_size=100, real_size=10):
+            grid_pos_x = int((pos[0] + real_size / 2) / real_size * grid_size)
+            grid_pos_y = int((-pos[1] + real_size / 2) / real_size * grid_size)
+            return np.clip(grid_pos_x, 0, grid_size-1), np.clip(grid_pos_y, 0, grid_size-1)
+        
+        def attractive_potential(size, goal):
+
+            U_tot = np.zeros((size, size), dtype=int)
+
+            for i in range((self.occgrid).shape[0]):
+                for j in range((self.occgrid).shape[1]):
+                    if self.occgrid[i,j] == 1:
+                        U_tot[i, j] = 10000
+                    else:
+                        U_tot[i,j] = 0
+
+            gxi, gyi = goal[0:2]
+
+            rows, cols = 100,100
+            stack = [(gxi,gyi)]
+
+            wave = 0
+
+            while stack:
+                wave += 1
+                current = stack.pop(0)
+
+                r, c = current
+                neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+                
+                for neighbor in neighbors:
+                    nr, nc = neighbor
+                    if (0 <= nr < rows and 0 <= nc < cols) and not U_tot[nr,nc]:
+                        stack.append(neighbor)
+                        U_tot[nr,nc] = wave
+
+            return U_tot
+        
+        self.qi = self.get_robot_position()
+        
+
+        start_x,start_y = translate_to_grid(self.qi[:2].copy())
+        end_x,end_y = translate_to_grid(self.qf[:2].copy())
+        
+        start = (start_y,start_x)
+        end = (end_y,end_x)
+
+        U_tot = attractive_potential(100,end)
+
+        def find_lowest_value_path(grid, start, end, search_range):
+            path = [start]
+            current_point = start
+            nPoints = 0
+
+            while current_point != end:
+                x, y = current_point
+                
+                x_min = max(0, x - search_range)
+                x_max = min(grid.shape[0], x + search_range + 1)
+                y_min = max(0, y - search_range)
+                y_max = min(grid.shape[1], y + search_range + 1)
+                
+                subgrid = grid[x_min:x_max, y_min:y_max]
+                
+                min_index = np.unravel_index(np.argmin(subgrid, axis=None), subgrid.shape)
+                min_point = (x_min + min_index[0], y_min + min_index[1])
+                
+                current_point = min_point
+                path.append(current_point)
+                
+                if (x_min <= end[0] < x_max) and (y_min <= end[1] < y_max):
+                    path.append(end)
+                    break
+                nPoints += 1
+                if(nPoints>=1000):
+                    break
+            
+            return path, nPoints
+        
+        
+        path,self.npoints = find_lowest_value_path(U_tot, start,end,2)
+
+        path_x, path_y = zip(*path) if path else ([], [])
+
+        print(path_x)
+        path_x = np.array(path_x)
+        path_y = np.array(path_y)
+
+        self.pathx = path_y.copy()
+        self.pathx = np.clip((self.pathx - 50)/10,-5,5)
+
+        self.pathy = path_x.copy()
+        self.pathy = - np.clip((self.pathy - 50)/10,-5,5)
+
+        if(printmap):
+            # Separate path coordinates
+            
+
+            # Plot the grid
+            plt.figure(figsize=(8, 8))
+            plt.imshow(U_tot, cmap='viridis', origin='upper', interpolation='none')
+            plt.colorbar(label='Poder Repulsivo')
+            plt.title('Mapa Manhatan')
+
+            # Plot the path
+            plt.plot(path_y, path_x, color='red', marker='o', markersize=3, linewidth=2, linestyle='-', alpha=0.7)
+
+            plt.show()
+
     def get_generated_path_graph(self, n_grade=50, printmap=True):
 
         def real2grid(real_x, real_y, n):
@@ -738,140 +927,6 @@ class RobotController:
             res = sim.simxSetObjectPosition(self.clientID, pathHandle, -1, [x, y, 0], sim.simx_opmode_oneshot)
             time.sleep(0.07)
         return res
-    
-####
-#### Geração do mapa
-####
-
-    def clear_map_grid(self):
-
-        # res, pos_sens = sim.simxGetObjectPosition(self.clientID, self.ultrasonic_sensor_1, -1, sim.simx_opmode_streaming) 
-        # res, ori_sens =  sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_oneshot_wait)
-        # # self.qs[2] = self.angle_wrap(ori_sens[2])
-        # self.qs = np.array([pos_sens[0], pos_sens[1], self.angle_wrap(ori_sens[2])])
-        for i in range(3, 7):  # Para sensores de 1 a 8
-            res, pos_sens = sim.simxGetObjectPosition(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
-            res, ori_sens = sim.simxGetObjectOrientation(self.clientID, getattr(self, f'ultrasonic_sensor_{i}'), -1, sim.simx_opmode_blocking)
-            self.qs[i-1, :2] = pos_sens[:2]  # Atualiza as primeiras duas colunas com a posição (x, y)
-            self.qs[i-1, 2] = self.angle_wrap(ori_sens[2] + self.sensor_angles[i-1])  # Atualiza a terceira coluna com a orientação (theta)
-     
-        cx = np.arange(self.map_size[0], self.map_size[1]+self.cell_size, self.cell_size)
-        cy = np.arange(self.map_size[1], self.map_size[0]-self.cell_size, -self.cell_size)
-      
-        col = len(cx)
-        lin = len(cy)
-    
-        self.grid = np.ones((col, lin)) * 50
-
-        plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
-        plt.show()
-    
-    def fill_map_grid(self, z, i):
-
-        def check_angle(ang_l, ang_h, phi):
-            if ang_l < ang_h:
-                if ang_l <= phi <= ang_h:
-                    return True
-            elif ang_l > ang_h:
-                if ang_l <= phi or phi <= ang_h:
-                    return True
-            return False
-        
-        def cell_value_sat(value):
-            if value < 0.0:
-                return 0.0
-            elif value > 100.0:
-                return 100.0
-            return value
-        
-        z_max = 1 # m
-
-        alpha = self.sensor_oppening_angles[i]
-        e = 0.15 + 0.05 * np.random.randn()
-
-        r_l = (z - e/2)
-        r_h = (z + e/2)
-
-        # ang_l = (self.angle_wrap(self.qs[i, 2]) - alpha/2)
-        # ang_h = (self.angle_wrap(self.qs[i, 2]) + alpha/2)
-
-        # ang_l = self.angle_wrap(ang_l)
-        # ang_h = self.angle_wrap(ang_h)
-
-        cx = np.arange(self.map_size[0], self.map_size[1]+self.cell_size, self.cell_size)
-        cy = np.arange(self.map_size[1], self.map_size[0]-self.cell_size, -self.cell_size)
-
-        sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
-        sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_streaming)
-
-        returnCode, pos = sim.simxGetObjectPosition(self.clientID, self.robotHandle, -1, sim.simx_opmode_buffer)
-        res, ori = sim.simxGetObjectOrientation(self.clientID, self.robotHandle, -1, sim.simx_opmode_buffer)
-        
-        # ori = self.get_filtered_orientation()
-        
-        xr, yr, ts = pos[0], pos[1], ori[2]
-        # print(f'Robô:', np.rad2deg(ts))
-        # print(f'Sensor {i}: Z :{z} angulo:', np.rad2deg(ts + self.sensor_angles[i]))
-        for yi in range(self.grid.shape[1]):
-            for xi in range(self.grid.shape[0]):
-
-                xm, ym = cx[xi], cy[yi]
-                
-                # time.sleep(0.1)
-                # print(xr,yr,tr)
-
-                dist = np.sqrt((xm-xr)**2 + (ym-yr)**2)
-                phi = self.angle_wrap(np.arctan2((ym-yr), (xm-xr)) - (ts + self.sensor_angles[i]))
-               
-
-                # dist = np.sqrt((xm-self.qs[i, 0])**2 + (ym-self.qs[i, 1])**2)
-                # phi = np.arctan2((ym-self.qs[i, 1]), (xm-self.qs[i, 0]))
-                # print(z)
-
-                # if z < 0.001:
-                #     continue
-                # if z > 2:
-                #     if 0.01 <= dist <= 1:
-                #         if check_angle(ang_h, ang_l, phi):
-                #             self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 50)
-                #             continue
-
-                if (dist > min(z_max, r_h)) or (abs(phi) > alpha/2):
-                    # print("Aqui1")
-                    # print("C1:", dist > min(z_max, r_h))
-                    # print(dist, min(z_max, r_h) )
-                    continue
-
-                elif (z < z_max) and (abs(dist - z) < e/2) and (abs(phi) < alpha/2):
-                    self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 30)
-                    # continue
-                    # print("Aqui2")
-
-                elif (dist <= r_l) and (abs(phi) < alpha/2):
-                    self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 15)
-                    # continue
-                    # print("Aqui3")
-
-                
-
-                # if dist < 0.01:
-                #     self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 15)
-                # elif dist > 1:
-                #     continue
-                #     # self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 0)
-                # elif r_l <= dist <= r_h:
-                #     if check_angle(ang_l, ang_h, phi):
-                #         self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 30)
-                # elif 0.01 < dist < r_l:
-                #     if check_angle(ang_l, ang_h, phi):
-                #         self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] - 15)
-                # elif r_h < dist < 1.0:
-                #     continue
-                #     # self.grid[yi][xi] = cell_value_sat(self.grid[yi][xi] + 0 )
-            
-            
-        plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
-        plt.show()
 
 ####
 #### PLOTS dos dados
@@ -965,9 +1020,10 @@ class RobotController:
         plt.show()
 
     def plot_occupancy_grid(self):
-
-        plt.imshow(self.grid, cmap='Greys', vmin=0, vmax=100, extent=[-5, 5, -5, 5])
-        plt.colorbar(label='Probabilidade de Ocupação (%)')
+        pos_x, pos_y = (self.get_robot_position())[:2]
+        plt.imshow(self.grid, cmap='Greys', extent=[-5, 5, -5, 5])
+        plt.scatter(pos_x, pos_y, color='red')
+        # plt.colorbar(label='Probabilidade de Ocupação (%)')
         plt.title('Grade de Ocupação')
         plt.xlabel('X')
         plt.ylabel('Y')
